@@ -318,16 +318,20 @@ def prepare_sequences(params, db_values_x, db_values_y, db_names):
 
 def prepare_sequences_next_frame(params, db_values_x, db_values_y, db_names):
     """
-    构造"预测下一帧"的序列数据
+    构造"预测下一帧"的序列数据 - 滑动窗口版本
     
     输入: 第 t 帧的特征
     输出: 第 t+1 帧的 3D 姿态
     
-    X: [f1, f2, ..., f49]  (前 seq_length-1 帧)
-    Y: [y2, y3, ..., y50]  (后 seq_length-1 帧，即下一帧)
+    滑动窗口: 100帧 → 51条数据 (seq_length=50)
+    - 第1条: 帧 1-50
+    - 第2条: 帧 2-51
+    - ...
+    - 第51条: 帧 51-100
     """
     p_count = params['seq_length']
     max_count = params.get('max_count', None)
+    use_sliding_window = params.get('use_sliding_window', True)
     
     X_D, Y_D, F_L, S_L, R_L = [], [], [], [], []
     G_L = []
@@ -345,23 +349,34 @@ def prepare_sequences_next_frame(params, db_values_x, db_values_y, db_names):
     def flush_buffer(sequence_id):
         nonlocal Y_d, X_d, F_l, r_l
         
-        if len(Y_d) <= 1:
+        if len(Y_d) < p_count:
             return
-
-        residual = p_count - (len(Y_d) % p_count)
-        if residual < p_count:
-            Y_d.extend([Y_d[-1]] * residual)
-            X_d.extend([X_d[-1]] * residual)
-            last_f = F_l[-1] if len(F_l) > 0 else None
-            F_l.extend([last_f] * residual)
-            r_l.extend([0] * residual)
+        
+        if use_sliding_window:
+            for start_idx in range(len(Y_d) - p_count + 1):
+                end_idx = start_idx + p_count
+                
+                S_L.append(sequence_id)
+                Y_D.append(Y_d[start_idx:end_idx])
+                X_D.append(X_d[start_idx:end_idx])
+                F_L.append(F_l[start_idx:end_idx])
+                R_L.append(r_l[start_idx:end_idx])
+        else:
+            residual = p_count - (len(Y_d) % p_count)
+            if residual < p_count:
+                Y_d.extend([Y_d[-1]] * residual)
+                X_d.extend([X_d[-1]] * residual)
+                last_f = F_l[-1] if len(F_l) > 0 else None
+                F_l.extend([last_f] * residual)
+                r_l.extend([0] * residual)
             
-        if len(Y_d) == p_count:
-            S_L.append(sequence_id)
-            Y_D.append(Y_d)
-            X_D.append(X_d)
-            F_L.append(F_l)
-            R_L.append(r_l)
+            for i in range(0, len(Y_d), p_count):
+                if i + p_count <= len(Y_d):
+                    S_L.append(sequence_id)
+                    Y_D.append(Y_d[i:i+p_count])
+                    X_D.append(X_d[i:i+p_count])
+                    F_L.append(F_l[i:i+p_count])
+                    R_L.append(r_l[i:i+p_count])
         
         Y_d, X_d, F_l, r_l = [], [], [], []
 
@@ -382,17 +397,8 @@ def prepare_sequences_next_frame(params, db_values_x, db_values_y, db_names):
         F_l.append(f)
         r_l.append(1)
         
-        if len(Y_d) == p_count and p_count > 0:
-            S_L.append(curr_id)
-            Y_D.append(Y_d)
-            X_D.append(X_d)
-            F_L.append(F_l)
-            R_L.append(r_l)
-            Y_d, X_d, F_l, r_l = [], [], [], []
-            
-            if is_reached_limit(len(Y_D), max_count):
-                return (np.asarray(X_D, dtype=np.float32), np.asarray(Y_D, dtype=np.float32), 
-                        np.asarray(F_L), np.asarray(G_L, dtype=np.float32), np.asarray(S_L, dtype=np.float32), np.asarray(R_L, dtype=np.int32))
+        if is_reached_limit(len(Y_D), max_count):
+            break
 
     flush_buffer(curr_id)
 

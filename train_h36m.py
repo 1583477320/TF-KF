@@ -1,461 +1,512 @@
-import numpy as np
 import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.amp import autocast, GradScaler
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-
-from helper import train_helper as th
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+import numpy as np
 from helper import config
-from helper import checkpoint as cp
-from model_runner.klstm.kfl_QRf import Model as kfl_QRf
-from model_runner.klstm.kfl_QRFf import Model as kfl_QRFf
-from model_runner.klstm.kfl_QRFf_transformer import Model as kfl_QRFf_transformer
-from model_runner.klstm.kfl_K import Model as kfl_K
-from model_runner.lstm.pt_lstm import Model as lstm 
 from helper import dt_utils as dut
-from helper import utils as ut
+from model_runner.klstm.kfl_QRFf_transformer import Model as kfl_QRFf_transformer
+from model_runner.klstm.kfl_QRFf import Model as kfl_QRFf
 
 
-@torch.no_grad()
-def test_data(
-    model,
-    params,
-    X, Y,
-    index_list,
-    S_list,
-    R_L_list,
-    F_list,
-    batch_size,
-    device
-):
-    model.eval()
-
-    # -------------------------
-    # 初始化 Kalman 状态
-    # -------------------------
-    dic_state = ut.get_state_list(params)
-
-    # --- 修复点1：将 dic_state 中的 numpy 数组初始化为 Tensor ---
-    # 因为 helper 函数现在要求输入必须是 Tensor
-    def to_tensor(v):
-        if isinstance(v, np.ndarray):
-            return torch.from_numpy(v).float().to(device)
-        elif isinstance(v, list):
-             # 处理 LSTM state list [(h, c), ...]
-            return [(to_tensor(t[0]), to_tensor(t[1])) for t in v]
-        return v
-
-    for k, v in dic_state.items():
-        dic_state[k] = to_tensor(v)
+@dataclass
+class TrainingConfig:
+    model_name: str = "kfl_QRFf_transformer"
+    batch_size: int = 64
+    num_epochs: int = 100
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    max_grad_norm: float = 1.0
+    seq_length: int = 50
+    reset_state: int = 5
+    predict_next_frame: bool = True
+    device: str = "cuda"
+    checkpoint_dir: str = "model"
+    log_dir: str = "runs"
+    save_every: int = 10
+    patience: int = 10
+    param_smoothness_coef: float = 0.01
     
-    # Check if model uses LSTM or Transformer
-    is_transformer = "transformer" in params.get("model", "").lower()
+    def __post_init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+class PoseSequenceDataset(Dataset):
+    def __init__(self, X, Y, seq_ids, masks):
+        self.X = torch.from_numpy(X).float()
+        self.Y = torch.from_numpy(Y).float()
+        self.seq_ids = torch.from_numpy(seq_ids).long()
+        self.masks = torch.from_numpy(masks).float()
+        
+    def __len__(self):
+        return len(self.X)
     
-    # For transformer models, we don't need LSTM states
-    if is_transformer:
-        # Remove LSTM states if they exist
-        lstm_states = ["F_pre", "Q_pre", "R_pre", "K_pre"]
-        for state_key in lstm_states:
-            if state_key in dic_state:
-                del dic_state[state_key]
+    def __getitem__(self, idx):
+        return {
+            'x': self.X[idx],
+            'y': self.Y[idx],
+            'seq_id': self.seq_ids[idx],
+            'mask': self.masks[idx]
+        }
 
-    NOUT = params["n_output"]
-    I = torch.eye(NOUT, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
-    params["reset_state"] = -1 
-
-    state_reset_counter_lst = [0 for _ in range(batch_size)]
-    n_batches = len(index_list) // batch_size
-
-    total_loss = 0.0
-    total_count = 0
-
-    # -------------------------
-    # batch loop with tqdm
-    # -------------------------
-    test_pbar = tqdm(range(n_batches), desc="Testing", unit="batch", leave=False)
-    for minibatch_index in test_pbar:
-
-        state_reset_counter_lst = [s + 1 for s in state_reset_counter_lst]
-
-        # ------------------------------------------------
-        # 1. 取 batch (helper 返回的应该是 Tensor)
-        # ------------------------------------------------
-        (
-            dic_state, 
-            x, y, r, f,
-            curr_sid,
-            state_reset_counter_lst,
-            curr_id_lst
-        ) = th.prepare_kfl_QRFf_batch(
-            is_test=1,
-            index_list=index_list,
-            minibatch_index=minibatch_index,
-            batch_size=batch_size,
-            S_list=S_list,
-            dic_state=dic_state,
-            params=params,
-            Y=Y,
-            X=X,
-            R_L_list=R_L_list,
-            F_list=F_list,
-            state_reset_counter_lst=state_reset_counter_lst,
-            device=device
+class MPJPELoss(nn.Module):
+    def __init__(self, n_joints: int = 17):
+        super().__init__()
+        self.n_joints = n_joints
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pred_reshaped = pred.view(-1, self.n_joints, 3)
+        target_reshaped = target.view(-1, self.n_joints, 3)
+        
+        joint_errors = torch.sqrt(
+            torch.sum((pred_reshaped - target_reshaped) ** 2, dim=-1) + 1e-6
         )
+        return joint_errors.mean()
 
-        # --- 修复点2：显式确保输入数据是 Tensor ---
-        # 虽然 helper 可能已经做了转换，但为了保险起见再次检查
-        if not isinstance(x, torch.Tensor):
-            x = torch.from_numpy(x).float().to(device)
-        if not isinstance(y, torch.Tensor):
-            y = torch.from_numpy(y).float().to(device)
 
-        # 处理 Mask (repeat_data)
-        if r is None:
-            repeat_data = torch.ones((x.shape[0], x.shape[1]), device=device)
-        else:
-            if not isinstance(r, torch.Tensor):
-                repeat_data = torch.from_numpy(r).float().to(device)
-            else:
-                repeat_data = r.float()
+class SmoothMPJPELoss(nn.Module):
+    def __init__(self, n_joints: int = 17, smooth_weight: float = 0.1):
+        super().__init__()
+        self.n_joints = n_joints
+        self.smooth_weight = smooth_weight
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        input_dtype = pred.dtype
+        eps = torch.tensor(1e-8, device=pred.device, dtype=input_dtype)
         
-        # 确保 repeat_data 形状正确 (B, T)
-        if repeat_data.dim() == 1:
-            repeat_data = repeat_data.unsqueeze(1)
-
-        # 准备初始状态 _x_inp 和 _P_inp
-        # 使用实际 batch size (x.shape[0]) 以防最后一个 batch 不满
-        actual_bsz = x.shape[0]
+        pred_reshaped = pred.view(-1, self.n_joints, 3)
+        target_reshaped = target.view(-1, self.n_joints, 3)
         
-        if dic_state.get("_x_pre") is None:
-            _x_inp = torch.zeros(actual_bsz, NOUT, device=device)
-        else:
-            _x_inp = dic_state["_x_pre"]
-
-        if dic_state.get("PCov_pre") is None:
-            _P_inp = I[:actual_bsz].clone()
-        else:
-            _P_inp = dic_state["PCov_pre"]
-
-        # ------------------------------------------------
-        # 3. 模型推理
-        # ------------------------------------------------
-        # 传入 _I 时也要注意 batch size 切片
-        cost, new_states = model(
-            _z=x,
-            target_data=y,
-            repeat_data=repeat_data,
-            _x_inp=_x_inp,
-            _P_inp=_P_inp,
-            _I=I[:actual_bsz],
-            state_dict=dic_state,
-            is_training=False
+        joint_errors = torch.sqrt(
+            torch.sum((pred_reshaped - target_reshaped) ** 2, dim=-1) + 1e-6
         )
-
-        # ------------------------------------------------
-        # 4. 更新状态 (保持 Tensor 格式)
-        # ------------------------------------------------
-        # --- 修复点3：不再转 numpy，而是 detach ---
-        # LSTM 状态是列表
-        if "F_t" in new_states:
-            dic_state["F_pre"] = [(h.detach(), c.detach()) for h, c in new_states["F_t"]]
-        if "Q_t" in new_states:
-            dic_state["Q_pre"] = [(h.detach(), c.detach()) for h, c in new_states["Q_t"]]
-        if "R_t" in new_states:
-            dic_state["R_pre"] = [(h.detach(), c.detach()) for h, c in new_states["R_t"]]
+        mpjpe = joint_errors.mean().to(input_dtype)
         
-        # 普通状态
-        if "PCov_t" in new_states:
-            dic_state["PCov_pre"] = new_states["PCov_t"].detach()
-        if "_x_t" in new_states:
-            dic_state["_x_pre"] = new_states["_x_t"].detach()
-
-        # ------------------------------------------------
-        # 5. 累积 Loss (计算 MSE)
-        # ------------------------------------------------
-        pred = model.final_output
-        gt = model.y
-        mse_loss = torch.mean(torch.square(pred - gt))
+        diff_norm = torch.sqrt((pred - target) ** 2 + eps)
+        smooth_loss = torch.mean(diff_norm).to(input_dtype)
         
-        batch_count = pred.shape[0]
-        total_loss += mse_loss.item() * batch_count
-        total_count += batch_count
-
-    if total_count > 0:
-        avg_loss = total_loss / total_count
-    else:
-        avg_loss = 0.0
-
-    print(f"[Test] Avg MSE Loss = {avg_loss:.6f}")
-    return avg_loss
+        smooth_weight_tensor = torch.tensor(self.smooth_weight, device=pred.device, dtype=input_dtype)
+        return mpjpe + smooth_weight_tensor * smooth_loss
 
 
-def train(model, params, device, X_train, Y_train, X_test, Y_test, index_train_list, index_test_list, S_Train_list, S_Test_list, R_L_Train_list, R_L_Test_list, F_list_train, F_list_test):
-    batch_size = params["batch_size"]
-    num_epochs = 100
-    decay_rate = 0.9
-    show_every = 100
-    deca_start = 3
+class ParameterSmoothnessLoss(nn.Module):
+    def __init__(self, model: nn.Module, smoothness_coef: float = 0.01):
+        super().__init__()
+        self.model = model
+        self.smoothness_coef = smoothness_coef
+        self.prev_params = None
+        
+        self._save_current_params()
     
-    optimizer = optim.Adam(model.parameters(), lr=params['lr'])
-    scaler = GradScaler('cuda')
+    def _save_current_params(self):
+        self.prev_params = {
+            name: param.data.clone().detach()
+            for name, param in self.model.named_parameters()
+        }
     
-    actual_seq_length = X_train.shape[1]
-    I_np = torch.eye(params['n_output']).repeat(params["batch_size"], 1, 1).to(device)   
+    def forward(self) -> torch.Tensor:
+        first_param = next(self.model.parameters())
+        device = first_param.device
+        dtype = first_param.dtype
+        
+        if self.prev_params is None:
+            return torch.zeros(1, device=device, dtype=dtype)
+        
+        param_diff_norm = torch.zeros(1, device=device, dtype=dtype)
+        eps = torch.tensor(1e-8, device=device, dtype=dtype)
+        
+        for name, param in self.model.named_parameters():
+            if name in self.prev_params:
+                diff = param - self.prev_params[name].to(dtype)
+                param_diff_norm = param_diff_norm + torch.sum(diff.float() ** 2)
+        
+        param_diff_norm = torch.sqrt(param_diff_norm + eps).to(dtype)
+        
+        smoothness_coef_tensor = torch.tensor(self.smoothness_coef, device=device, dtype=dtype)
+        return smoothness_coef_tensor * param_diff_norm
+    
+    def update(self):
+        self._save_current_params()
 
-    print('Training model: ' + params["model"])
-    print(f'Batch size: {batch_size}')
-    print(f'Sequence length: {actual_seq_length}')
-    print(f'Mixed precision: Enabled')
-    if params.get('predict_next_frame', False):
-        print('Mode: Predict Next Frame')
-    noise_std = params['noise_std']
-    new_noise_std = 0.0
 
-    n_train_batches = len(index_train_list) // batch_size
-    
-    base_checkpoint_dir = params.get("cp_file", "model")
-    checkpoint_dir = os.path.join(base_checkpoint_dir, params["model"])
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    
-    checkpoint_manager = cp.ModelCheckpoint(
-        checkpoint_dir=checkpoint_dir,
-        model_name=params["model"],
-        max_checkpoints=5,
-        save_best_only=False
-    )
-    
-    start_epoch = 0
-    resume_checkpoint = os.path.join(checkpoint_dir, "resume_checkpoint.ckpt")
-    if os.path.exists(resume_checkpoint):
-        try:
-            ckpt = torch.load(resume_checkpoint, map_location=device)
+class Trainer:
+    def __init__(self, model: nn.Module, config: TrainingConfig):
+        self.model = model.to(config.device)
+        self.config = config
+        self.device = config.device
+        
+        self.optimizer = optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay
+        )
+        
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6
+        )
+        
+        self.criterion = SmoothMPJPELoss(n_joints=17)
+        self.param_smoothness_loss = ParameterSmoothnessLoss(
+            model, 
+            smoothness_coef=config.param_smoothness_coef
+        )
+        
+        log_dir = os.path.join(
+            config.log_dir,
+            config.model_name,
+            datetime.now().strftime("%Y%m%d-%H%M%S")
+        )
+        self.writer = SummaryWriter(log_dir=log_dir)
+        
+        self.checkpoint_dir = os.path.join(config.checkpoint_dir, config.model_name)
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        
+        self.best_loss = float('inf')
+        self.best_mpjpe = float('inf')
+        self.patience_counter = 0
+        self.global_step = 0
+        
+    def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
+        self.model.train()
+        total_loss = 0.0
+        total_task_loss = 0.0
+        total_smooth_loss = 0.0
+        total_mpjpe = 0.0
+        total_correct = 0
+        total_samples = 0
+        num_batches = 0
+        
+        pbar = tqdm(dataloader, desc="Training", leave=False)
+        
+        for batch in pbar:
+            x = batch['x'].to(self.device)
+            y = batch['y'].to(self.device)
+            mask = batch['mask'].to(self.device)
             
-            saved_predict_next_frame = ckpt.get('params', {}).get('predict_next_frame', False)
-            current_predict_next_frame = params.get('predict_next_frame', False)
+            batch_size = x.shape[0]
+            input_dtype = x.dtype
             
-            if saved_predict_next_frame != current_predict_next_frame:
-                print(f"[Checkpoint] Mode changed (predict_next_frame: {saved_predict_next_frame} -> {current_predict_next_frame}), starting fresh")
-                start_epoch = 0
+            I = torch.eye(self.model.NOUT, device=self.device, dtype=input_dtype).unsqueeze(0).expand(batch_size, -1, -1)
+            
+            x_state = torch.zeros(batch_size, self.model.NOUT, device=self.device, dtype=input_dtype)
+            P_state = I.clone()
+            
+            result = self.model(
+                _z=x,
+                target_data=y,
+                repeat_data=mask,
+                _x_inp=x_state,
+                _P_inp=P_state,
+                _I=I,
+                state_dict={},
+                is_training=True
+            )
+            
+            if len(result) == 4:
+                _, _, pred, gt = result
+                if pred.shape[0] > 0:
+                    task_loss = self.criterion(pred, gt)
+                    
+                    pred_reshaped = pred.float().view(-1, 17, 3)
+                    gt_reshaped = gt.float().view(-1, 17, 3)
+                    eps = torch.tensor(1e-8, device=pred.device, dtype=torch.float32)
+                    diff = pred_reshaped - gt_reshaped
+                    joint_errors = torch.sqrt(
+                        torch.sum(diff ** 2, dim=-1, keepdim=True) + eps
+                    )
+                    batch_mpjpe = joint_errors.mean().to(pred.dtype)
+                    total_mpjpe += batch_mpjpe.item()
+                    
+                    correct = (joint_errors < 70.0).float().sum().item()
+                    total_correct += correct
+                    total_samples += joint_errors.numel()
+                else:
+                    task_loss = torch.zeros(1, device=self.device, dtype=x.dtype, requires_grad=True)
             else:
-                model.load_state_dict(ckpt['model_state_dict'])
-                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-                start_epoch = ckpt.get('epoch', 0) + 1
-                print(f"[Checkpoint] Resuming from epoch {start_epoch}")
-        except Exception as e:
-            print(f"[Checkpoint] Failed to resume: {e}")
-            start_epoch = 0
-
-    epoch_pbar = tqdm(range(start_epoch, num_epochs), desc="Training", unit="epoch")
-    for e in epoch_pbar:
-        # 学习率衰减
-        if e > (deca_start-1):
-            new_lr = params['lr'] * (decay_rate ** (e))
-        else:
-            new_lr = params['lr']
+                task_loss, _ = result
+            
+            smooth_loss = self.param_smoothness_loss()
+            loss = task_loss + smooth_loss
+            
+            loss.backward()
+            
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.config.max_grad_norm
+            )
+            
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            
+            if not torch.isnan(loss):
+                total_loss += loss.item()
+            if not torch.isnan(task_loss):
+                total_task_loss += task_loss.item()
+            if not torch.isnan(smooth_loss):
+                total_smooth_loss += smooth_loss.item()
+            num_batches += 1
+            self.global_step += 1
+            
+            acc = total_correct / total_samples * 100 if total_samples > 0 else 0.0
+            pbar.set_postfix(
+                loss=f"{loss.item() if not torch.isnan(loss) else 0.0:.4f}", 
+                mpjpe=f"{batch_mpjpe:.1f}" if total_mpjpe > 0 else "N/A",
+                acc=f"{acc:.1f}%"
+            )
         
-        for g in optimizer.param_groups:
-            g['lr'] = new_lr
-
-        total_train_loss = 0
-
-        state_reset_counter_lst = [0 for i in range(batch_size)]
-        index_train_list_s = index_train_list
-        dic_state = ut.get_state_list(params)
+        self.param_smoothness_loss.update()
         
-        # Check if model uses LSTM or Transformer
-        is_transformer = "transformer" in params.get("model", "").lower()
+        return {
+            'loss': total_loss / num_batches if num_batches > 0 else 0.0,
+            'task_loss': total_task_loss / num_batches if num_batches > 0 else 0.0,
+            'smooth_loss': total_smooth_loss / num_batches if num_batches > 0 else 0.0,
+            'mpjpe': total_mpjpe / num_batches if num_batches > 0 else 0.0,
+            'acc': total_correct / total_samples * 100 if total_samples > 0 else 0.0
+        }
+    
+    @torch.no_grad()
+    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
+        self.model.eval()
+        total_loss = 0.0
+        total_mpjpe = 0.0
+        total_correct = 0
+        total_samples = 0
+        num_batches = 0
         
-        # For transformer models, we don't need LSTM states
-        if is_transformer:
-            # Remove LSTM states if they exist
-            lstm_states = ["F_pre", "Q_pre", "R_pre", "K_pre"]
-            for state_key in lstm_states:
-                if state_key in dic_state:
-                    del dic_state[state_key]
+        pbar = tqdm(dataloader, desc="Validating", leave=False)
         
-        if params["shufle_data"]==1 and params['reset_state']==1:
-            index_train_list_s = ut.shufle_data(index_train_list)
-
-        model.train() # 设置为训练模式
-        batch_pbar = tqdm(range(n_train_batches), desc=f"Epoch {e}", unit="batch", leave=False)
-        for minibatch_index in batch_pbar:
-            # 1. 调用你写的准备函数 (包含了重置逻辑)
-            # 注意：这里的 dic_state 会根据 case 1-4 自动决定是 reset 还是继承
-            (dic_state, x, y, r_batch, f_batch, _, state_reset_counter_lst, _) = \
-                th.prepare_kfl_QRFf_batch(
-                    is_test=0, 
-                    index_list=index_train_list, 
-                    minibatch_index=minibatch_index,
-                    batch_size=params['batch_size'],
-                    S_list=S_Train_list,
-                    dic_state=dic_state,
-                    params=params,
-                    Y=Y_train,
-                    X=X_train,
-                    R_L_list=R_L_Train_list,
-                    F_list=None,
-                    state_reset_counter_lst=state_reset_counter_lst,
-                    device=device
-                )
-
-            # 噪声注入
-            if noise_std > 0.0:
-               u_cnt = e*n_train_batches + minibatch_index
-               if u_cnt in params['noise_schedule']:
-                   if u_cnt==params['noise_schedule'][0]:
-                     new_noise_std=noise_std
-                   else:
-                       new_noise_std = noise_std * (u_cnt / (params['noise_schedule'][1]))
-
-                   s = 'NOISE --> u_cnt %i | error %f' % (u_cnt, new_noise_std)
-                   ut.log_write(s, params)
-               if new_noise_std>0.0:
-                   noise = np.random.normal(0.0, new_noise_std, x.shape)
-                   x = noise + x
-
-            # 模型前向传播 (混合精度)
-            with autocast('cuda'):
-                loss, new_states_t = model(
-                    _z=x,
-                    target_data=y,
-                    repeat_data=r_batch,
-                    _x_inp=dic_state["_x_pre"],
-                    _P_inp=dic_state["PCov_pre"],
-                    _I=I_np,
-                    state_dict=dic_state, 
-                    is_training=True
-                )
-
-            # 3. 更新梯度 (混合精度)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-
-            # 4. 关键：将模型输出的 _t 状态写回 dic_state 的 _t 槽位
-            for k, v in new_states_t.items():
-                dic_state[k] = th.detach_state(v)
-
-            total_train_loss += loss.item()
-            batch_pbar.set_postfix(loss=f"{loss.item():.4f}")
-
-        total_train_loss = total_train_loss / n_train_batches
-        epoch_pbar.set_postfix(train_loss=f"{total_train_loss:.4f}")
-        s = 'TRAIN --> epoch %i | error %f'%(e, total_train_loss)
-        ut.log_write(s, params)
-
-        pre_test = "TRAINING_Data"
-        train_eval_loss = test_data(model, params, X_train, Y_train, index_train_list, S_Train_list, R_L_Train_list,
-                                   F_list_train, batch_size, device)
-
-        pre_test = "TEST_Data"
-        test_eval_loss = test_data(model, params, X_test, Y_test, index_test_list, S_Test_list, R_L_Test_list, F_list_test, batch_size, device)
+        for batch in pbar:
+            x = batch['x'].to(self.device)
+            y = batch['y'].to(self.device)
+            mask = batch['mask'].to(self.device)
+            
+            batch_size = x.shape[0]
+            input_dtype = x.dtype
+            
+            I = torch.eye(self.model.NOUT, device=self.device, dtype=input_dtype).unsqueeze(0).expand(batch_size, -1, -1)
+            
+            x_state = torch.zeros(batch_size, self.model.NOUT, device=self.device, dtype=input_dtype)
+            P_state = I.clone()
+            
+            result = self.model(
+                _z=x,
+                target_data=y,
+                repeat_data=mask,
+                _x_inp=x_state,
+                _P_inp=P_state,
+                _I=I,
+                state_dict={},
+                is_training=False
+            )
+            
+            if len(result) == 4:
+                loss, _, pred, gt = result
+                if pred.shape[0] > 0:
+                    pred_reshaped = pred.float().view(-1, 17, 3)
+                    gt_reshaped = gt.float().view(-1, 17, 3)
+                    eps = torch.tensor(1e-8, device=pred.device, dtype=torch.float32)
+                    diff = pred_reshaped - gt_reshaped
+                    joint_errors = torch.sqrt(
+                        torch.sum(diff ** 2, dim=-1, keepdim=True) + eps
+                    )
+                    mpjpe = joint_errors.mean().to(pred.dtype)
+                    total_mpjpe += mpjpe.item()
+                    
+                    correct = (joint_errors < 70.0).float().sum().item()
+                    total_correct += correct
+                    total_samples += joint_errors.numel()
+                    
+                    loss = self.criterion(pred, gt)
+                else:
+                    loss = torch.tensor(0.0, device=self.device, dtype=x.dtype)
+            else:
+                loss, _ = result
+            
+            if not torch.isnan(loss):
+                total_loss += loss.item()
+            num_batches += 1
+            
+            pbar.set_postfix({
+                'loss': f'{loss.item() if not torch.isnan(loss) else 0.0:.4f}',
+                'mpjpe': f'{total_mpjpe / num_batches if num_batches > 0 and not torch.isnan(torch.tensor(total_mpjpe / num_batches)) else 0.0:.2f}',
+                'acc': f'{total_correct / total_samples * 100 if total_samples > 0 else 0.0:.1f}%'
+            })
         
-        epoch_pbar.set_postfix(train_loss=f"{total_train_loss:.4f}", test_loss=f"{test_eval_loss:.4f}")
-        
-        metrics = {
-            'train_loss': total_train_loss,
-            'train_eval_loss': train_eval_loss,
-            'test_eval_loss': test_eval_loss,
-            'learning_rate': new_lr
+        return {
+            'loss': total_loss / num_batches if num_batches > 0 else 0.0,
+            'mpjpe': total_mpjpe / num_batches if num_batches > 0 else 0.0,
+            'acc': total_correct / total_samples * 100 if total_samples > 0 else 0.0
+        }
+    
+    def save_checkpoint(self, epoch: int, metrics: Dict[str, float], is_best: bool = False):
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'metrics': metrics,
+            'config': self.config.__dict__,
+            'prev_params': self.param_smoothness_loss.prev_params
         }
         
-        checkpoint_manager.save(
-            model=model,
-            optimizer=optimizer,
-            epoch=e,
-            loss=test_eval_loss,
-            params=params,
-            metrics=metrics
+        loss_str = f"{metrics['loss']:.5f}"
+        checkpoint_path = os.path.join(
+            self.checkpoint_dir, 
+            f"{self.config.model_name}_epoch{epoch}_loss{loss_str}.ckpt"
         )
+        torch.save(checkpoint, checkpoint_path)
         
-        resume_ckpt_path = os.path.join(checkpoint_dir, "resume_checkpoint.ckpt")
-        torch.save({
-            'epoch': e,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': test_eval_loss
-        }, resume_ckpt_path)
+        resume_path = os.path.join(self.checkpoint_dir, 'resume_checkpoint.ckpt')
+        torch.save(checkpoint, resume_path)
+        
+        if is_best:
+            best_path = os.path.join(
+                self.checkpoint_dir, 
+                f"best_{self.config.model_name}_epoch{epoch}_loss{loss_str}.ckpt"
+            )
+            torch.save(checkpoint, best_path)
+            
+            import json
+            best_info = {
+                'epoch': epoch,
+                'loss': metrics['loss'],
+                'mpjpe': metrics['mpjpe'],
+                'model_name': self.config.model_name
+            }
+            best_info_path = os.path.join(self.checkpoint_dir, 'best_info.json')
+            with open(best_info_path, 'w') as f:
+                json.dump(best_info, f, indent=2)
+            
+            print(f"Saved best model with loss: {metrics['loss']:.4f}, MPJPE: {metrics['mpjpe']:.2f} mm")
+    
+    def load_checkpoint(self, path: str):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if 'prev_params' in checkpoint:
+            self.param_smoothness_loss.prev_params = checkpoint['prev_params']
+        return checkpoint['epoch'], checkpoint['metrics']
+    
+    def fit(self, train_loader: DataLoader, val_loader: DataLoader):
+        print(f"Training {self.config.model_name}")
+        print(f"Device: {self.device}")
+        print(f"Batch size: {self.config.batch_size}")
+        print(f"Learning rate: {self.config.learning_rate}")
+        print(f"Param smoothness coef: {self.config.param_smoothness_coef}")
+        
+        for epoch in tqdm(range(self.config.num_epochs), desc="Training epochs", unit="epoch"):
+            
+            train_metrics = self.train_epoch(train_loader)
+            train_loss = train_metrics['loss']
+            train_task_loss = train_metrics['task_loss']
+            train_smooth_loss = train_metrics['smooth_loss']
+            
+            val_metrics = self.evaluate(val_loader)
+            val_loss = val_metrics['loss']
+            val_mpjpe = val_metrics['mpjpe']
+            
+            self.scheduler.step(val_loss)
+            current_lr = self.optimizer.param_groups[0]['lr']
+            
+            self.writer.add_scalar('Loss/train', train_loss, epoch)
+            self.writer.add_scalar('Loss/train_task', train_task_loss, epoch)
+            self.writer.add_scalar('Loss/train_smooth', train_smooth_loss, epoch)
+            self.writer.add_scalar('Loss/val', val_loss, epoch)
+            self.writer.add_scalar('MPJPE/val', val_mpjpe, epoch)
+            self.writer.add_scalar('Learning_Rate', current_lr, epoch)
+            
+            print(f"Epoch {epoch+1}/{self.config.num_epochs} - "
+                  f"Train Loss: {train_loss:.4f} (task: {train_task_loss:.4f}, smooth: {train_smooth_loss:.6f}) - "
+                  f"Val Loss: {val_loss:.4f} - Val MPJPE: {val_mpjpe:.2f} mm - LR: {current_lr:.6f}")
+            
+            is_best = val_loss < self.best_loss
+            if is_best:
+                self.best_loss = val_loss
+                self.best_mpjpe = val_mpjpe
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
+            
+            if (epoch + 1) % self.config.save_every == 0:
+                self.save_checkpoint(epoch, val_metrics, is_best)
+            
+            # if self.patience_counter >= self.config.patience:
+            #     print(f"Early stopping at epoch {epoch+1}")
+            #     break
+        
+        self.writer.close()
+        print("Training completed!")
+        print(f"Best Val Loss: {self.best_loss:.4f}")
+        print(f"Best Val MPJPE: {self.best_mpjpe:.2f} mm")
+
+
+def main():
+    config_params = config.get_params()
+    
+    train_config = TrainingConfig(
+        model_name="kfl_QRFf_transformer",
+        batch_size=256,
+        num_epochs=50,
+        learning_rate=2e-4,
+        predict_next_frame=True,
+        param_smoothness_coef=0.0,
+        patience=10,
+    )
+    
+    print("Preparing dataset...")
+    params = config.update_params(config_params)
+    params['predict_next_frame'] = train_config.predict_next_frame
+    params['batch_size'] = train_config.batch_size
+    params['seq_length'] = train_config.seq_length
+    params['device'] = train_config.device
+    
+    (params, X_train, Y_train, F_train, G_train, S_train, R_L_train,
+     X_test, Y_test, F_test, G_test, S_test, R_L_test) = dut.prepare_training_set(params)
+    
+    train_dataset = PoseSequenceDataset(X_train, Y_train, S_train, R_L_train)
+    val_dataset = PoseSequenceDataset(X_test, Y_test, S_test, R_L_test)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=train_config.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=train_config.batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Val samples: {len(val_dataset)}")
+    
+    if train_config.model_name == "kfl_QRFf_transformer":
+        model = kfl_QRFf_transformer(params=params)
+    elif train_config.model_name == "kfl_QRFf":
+        model = kfl_QRFf(params=params)
+    else:
+        raise ValueError(f"Unknown model: {train_config.model_name}")
+    
+    trainer = Trainer(model, train_config)
+    trainer.fit(train_loader, val_loader)
+
 
 if __name__ == "__main__":
-    # GPU Configuration
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    
-    torch.autograd.set_detect_anomaly(True)
-    print(f"Using device: {device}")
-    # Main Execution Block
-    rnn_keep_prob_lst = [0.8]
-    rnn_input_prob_lst = [1.0]
-    seq_lst = [50]
-    reset_state = [5, 100, 20]
-    normalise_data_lst = [3]
-    params = config.get_params()
-    # params["mfile"] = '/mnt/Data1/hc/tt/cp/lstm_nostate1/cp/' # 保持原样或注释掉
-
-    rnn_keep_prob = 0.8
-    input_keep_prob = 1.0
-    params['rnn_keep_prob'] = rnn_keep_prob
-    params['input_keep_prob'] = input_keep_prob
-    seq = 50
-    res = 5
-
-    # PyTorch 不需要 tf.Graph().as_default()
-    print("seq: ============== %s  ============" % seq)
-    print("reset_state: ============== %s  ============" % res)
-    print("rnn_keep_prob: ============== %s  ============" % rnn_keep_prob)
-
-    params['normalise_data'] = 4
-    params['reset_state'] = res
-    params['seq_length'] = seq
-    params["reload_data"] = 0
-    params['batch_size'] = 256
-    params['lr']=0.0001
-    params['predict_next_frame'] = True
-    params = config.update_params(params)
-    params["model"] = "kfl_QRFf"
-    params["device"] = device
-
-    # 初始化 PyTorch 模型
-    if params["model"] == "lstm":
-        tracker = lstm(params=params)
-    elif params["model"] == "kfl_QRf":
-        tracker = kfl_QRf(params=params)
-    # elif params["model"] == "kfl_Rf":
-    #     tracker = kfl_Rf(params=params)
-    elif params["model"] == "kfl_QRFf":
-        tracker = kfl_QRFf(params=params)
-    elif params["model"] == "kfl_QRFf_transformer":
-        tracker = kfl_QRFf_transformer(params=params)
-    elif params["model"] == "kfl_K":
-        tracker = kfl_K(params=params)
-
-    # 将模型移动到 GPU
-    tracker.to(device)
-
-    params["rn_id"] = "dobuleloss081500_nrm4_seq%i_res%i_keep%f_lr%f"%(seq, res, rnn_keep_prob, params["lr"])
-    params = config.update_params(params)
-
-    (params, X_train, Y_train, F_list_train, G_list_train, S_Train_list, R_L_Train_list,
-            X_test, Y_test, F_list_test, G_list_test, S_Test_list, R_L_Test_list) = \
-            dut.prepare_training_set(params)
-
-    # show_every = 1
-    (index_train_list, S_Train_list) = dut.get_seq_indexes(params, S_Train_list)
-    (index_test_list, S_Test_list) = dut.get_seq_indexes(params, S_Test_list)
-
-    batch_size = params['batch_size']
-    n_train_batches = len(index_train_list)
-    n_train_batches //= batch_size
-
-    n_test_batches = len(index_test_list)
-    n_test_batches //= batch_size
-    params['training_size'] = len(X_train) * params['seq_length']
-    params['test_size'] = len(X_test) * params['seq_length']
-
-    # ut.start_log(params)
-    # ut.log_write("Model training started", params)
-
-    train(tracker, params, device, X_train, Y_train, X_test, Y_test, index_train_list, index_test_list, S_Train_list, S_Test_list, R_L_Train_list, R_L_Test_list, F_list_train, F_list_test)
+    main()

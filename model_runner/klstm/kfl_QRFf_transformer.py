@@ -3,6 +3,7 @@ import torch.nn as nn
 import math
 import torch.nn.functional as F
 
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -15,16 +16,27 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # x shape: (Batch, Seq_len, Dim)
         seq_len = x.size(1)
-        return x + self.pe[:, :seq_len, :]
+        return x + self.pe[:, :seq_len, :].to(dtype=x.dtype)
 
-class TransformerEncoder(nn.Module):
+
+def generate_causal_mask(seq_len, device):
+    mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1)
+    mask = mask.masked_fill(mask == 1, float('-inf'))
+    return mask
+
+
+class SharedTransformerEncoder(nn.Module):
+    """
+    共享的 Transformer Encoder
+    
+    优化：使用一个共享的 Transformer 处理输入，然后用不同的线性层输出不同特征
+    """
     def __init__(self, input_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
-        super(TransformerEncoder, self).__init__()
+        super(SharedTransformerEncoder, self).__init__()
         self.input_projection = nn.Linear(input_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
-        
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -33,41 +45,44 @@ class TransformerEncoder(nn.Module):
             batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        # 保持输出维度与 d_model 一致
-        self.output_projection = nn.Linear(d_model, d_model)
-        
-    def forward(self, x, mask=None):
+
+    def forward(self, x, causal_mask=None, src_key_padding_mask=None):
         x = self.input_projection(x)
         x = self.pos_encoder(x)
-        x = self.transformer_encoder(x, src_key_padding_mask=mask)
-        x = self.output_projection(x)
+        x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=src_key_padding_mask)
         return x
 
+
 class Model(nn.Module):
+    """
+    优化版本：共享 Transformer Encoder
+    
+    改进：
+    1. 使用一个共享的 Transformer 处理输入
+    2. 不同的线性层输出 F, Q, R 特征
+    3. 计算量和显存占用减少 3 倍
+    4. 缓存 causal mask 避免重复生成
+    """
     def __init__(self, params):
         super(Model, self).__init__()
         self.NOUT = params['n_output']
-        
-        # --- Transformer Parameters ---
+        self.n_joints = 17
+        self.joint_dim = 3
+
         self.d_model = params.get('d_model', 512)
         self.nhead = params.get('nhead', 8)
         self.num_layers = params.get('num_layers', 3)
         self.dim_feedforward = params.get('dim_feedforward', 2048)
         self.dropout = params.get('dropout', 0.1)
+
+        self.bptt_truncate = params.get('bptt_truncate', 10)
         
-        # Q Transformer Parameters
-        self.Q_d_model = params.get('Q_d_model', 256)
-        self.Q_nhead = params.get('Q_nhead', 4)
-        self.Q_num_layers = params.get('Q_num_layers', 1)
-        
-        # R Transformer Parameters
-        self.R_d_model = params.get('R_d_model', 256)
-        self.R_nhead = params.get('R_nhead', 4)
-        self.R_num_layers = params.get('R_num_layers', 1)
-        
-        # --- Modules ---
-        # 1. State Transition Transformer (F): Predicts next state x_pred
-        self.transformer_F = TransformerEncoder(
+        self.max_seq_len = params.get('max_seq_len', 100)
+
+        # Cache causal mask for max sequence length
+        self.register_buffer('cached_causal_mask', generate_causal_mask(self.max_seq_len, 'cpu'))
+
+        self.shared_transformer = SharedTransformerEncoder(
             input_size=self.NOUT,
             d_model=self.d_model,
             nhead=self.nhead,
@@ -75,35 +90,14 @@ class Model(nn.Module):
             dim_feedforward=self.dim_feedforward,
             dropout=self.dropout
         )
+
         self.fc_x = nn.Linear(self.d_model, self.NOUT)
-        
-        # 2. Q Noise Transformer: Predicts Q (process noise) and F (transition matrix for covariance)
-        self.transformer_Q = TransformerEncoder(
-            input_size=self.NOUT,
-            d_model=self.Q_d_model,
-            nhead=self.Q_nhead,
-            num_layers=self.Q_num_layers,
-            dim_feedforward=self.Q_d_model * 4,
-            dropout=self.dropout
-        )
-        # Output Q (diagonal elements for stability)
-        self.fc_Q = nn.Linear(self.Q_d_model, self.NOUT)
-        # Output F (Diagonal elements for stability)
-        self.fc_F_mat = nn.Linear(self.Q_d_model, self.NOUT)
-        
-        # 3. R Noise Transformer: Predicts R (measurement noise)
-        self.transformer_R = TransformerEncoder(
-            input_size=self.NOUT,
-            d_model=self.R_d_model,
-            nhead=self.R_nhead,
-            num_layers=self.R_num_layers,
-            dim_feedforward=self.R_d_model * 4,
-            dropout=self.dropout
-        )
-        self.fc_R = nn.Linear(self.R_d_model, self.NOUT)
-        
+        self.fc_Q_diag = nn.Linear(self.d_model, self.n_joints * 6)
+        self.fc_F_diag = nn.Linear(self.d_model, self.n_joints * 6)
+        self.fc_R_diag = nn.Linear(self.d_model, self.n_joints * 6)
+
         self._init_weights()
-    
+
     def _init_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Linear):
@@ -111,142 +105,144 @@ class Model(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
+    def build_block_diag_from_cholesky(self, L_params, batch_size):
+        seq_len = L_params.shape[1]
+        input_dtype = L_params.dtype
+        device = L_params.device
+        L_params = L_params.view(batch_size, seq_len, self.n_joints, 6)
+        
+        eps = torch.tensor(0.001, device=device, dtype=input_dtype)
+        L_diag = F.softplus(L_params[..., :3]) + eps
+        L_off = L_params[..., 3:6] * torch.tensor(0.1, device=device, dtype=input_dtype)
+        
+        L_blocks = torch.zeros(batch_size, seq_len, self.n_joints, 3, 3, device=device, dtype=input_dtype)
+        L_blocks[..., 0, 0] = L_diag[..., 0]
+        L_blocks[..., 1, 0] = L_off[..., 0]
+        L_blocks[..., 1, 1] = L_diag[..., 1]
+        L_blocks[..., 2, 0] = L_off[..., 1]
+        L_blocks[..., 2, 1] = L_off[..., 2]
+        L_blocks[..., 2, 2] = L_diag[..., 2]
+        
+        block_diag = torch.zeros(batch_size, seq_len, self.NOUT, self.NOUT, device=device, dtype=input_dtype)
+        for j in range(self.n_joints):
+            start_idx = j * 3
+            end_idx = start_idx + 3
+            block_diag[:, :, start_idx:end_idx, start_idx:end_idx] = L_blocks[:, :, j]
+        
+        return block_diag
+
     def forward(self, _z, target_data, repeat_data, _x_inp, _P_inp, _I, state_dict=None, is_training=False):
-        """
-        Args:
-            _z: Observations (Batch, Seq_len, NOUT)
-            target_data: Ground truth states (Batch, Seq_len, NOUT)
-            repeat_data: Mask (Batch, Seq_len), 1 for valid observation, 0 for missing
-            _x_inp: Initial state (Batch, NOUT)
-            _P_inp: Initial covariance (Batch, NOUT, NOUT)
-            _I: Identity matrix (NOUT, NOUT)
-            state_dict: Dictionary of states (not used in transformer model)
-            is_training: Boolean indicating if model is in training mode
-        """
         device = _z.device
         batch_size = _z.shape[0]
         seq_length = _z.shape[1]
-        
-        # Initialize states
+
         x = _x_inp
         P = _P_inp
-        
-        # Ensure P is initialized as identity if it contains NaN
+
         if torch.isnan(P).any() or torch.isinf(P).any():
             P = torch.eye(self.NOUT, device=device, dtype=P.dtype).unsqueeze(0).expand(batch_size, -1, -1)
+
+        input_dtype = _z.dtype
+        # Use cached causal mask, sliced to current sequence length
+        causal_mask = self.cached_causal_mask[:seq_length, :seq_length].to(device)
+
+        shared_features = self.shared_transformer(_z, causal_mask=causal_mask)
+        pred_x_all = self.fc_x(shared_features)
+        Q_L_params = self.fc_Q_diag(shared_features)
+        F_L_params = self.fc_F_diag(shared_features)
+        R_L_params = self.fc_R_diag(shared_features)
         
+        input_dtype = _z.dtype
+        Q_all = self.build_block_diag_from_cholesky(Q_L_params.to(input_dtype), batch_size)
+        F_all = self.build_block_diag_from_cholesky(F_L_params.to(input_dtype), batch_size)
+        R_all = self.build_block_diag_from_cholesky(R_L_params.to(input_dtype), batch_size)
+
         xres_lst = []
+
+        eye_NOUT = torch.eye(self.NOUT, device=device, dtype=input_dtype)
+        eye_batch = eye_NOUT.unsqueeze(0).expand(batch_size, -1, -1)
+        eps = torch.tensor(1e-1, device=device, dtype=input_dtype)
+        half = torch.tensor(0.5, device=device, dtype=input_dtype)
+        clamp_min = torch.tensor(-10.0, device=device, dtype=input_dtype)
+        clamp_max = torch.tensor(10.0, device=device, dtype=input_dtype)
+        one = torch.tensor(1.0, device=device, dtype=input_dtype)
         
-        # --- Kalman Filtering Loop ---
+        P = P.to(input_dtype)
+        
+        xres_tensor = torch.zeros(batch_size, seq_length, self.NOUT, device=device, dtype=input_dtype)
+
         for time_step in range(seq_length):
-            z_t = _z[:, time_step, :]
-            
-            # Check for NaN in input
-            if torch.isnan(z_t).any():
-                z_t = torch.zeros_like(z_t)
-            
-            # 1. Predict State (x_pred) using Previous State (x)
-            # Input x is (Batch, NOUT) -> unsqueeze to (Batch, 1, NOUT)
-            F_output = self.transformer_F(x.unsqueeze(1))
-            pred_x = self.fc_x(F_output.squeeze(1))
-            
-            # 2. Predict Parameters (F_mat and Q) using Previous State (x)
-            Q_output = self.transformer_Q(x.unsqueeze(1))
-            Q_output_vec = Q_output.squeeze(1)
-            
-            # Process Noise Q (Diagonal elements only)
-            pred_Q = self.fc_Q(Q_output_vec)
-            q_diag = F.softplus(pred_Q) + 0.01
-            
-            # Transition Matrix F (Diagonal elements only)
-            pred_F_diag = self.fc_F_mat(Q_output_vec)
-            f_diag = F.softplus(pred_F_diag) + 0.01
-            
-            # 3. Predict Measurement Noise (R) using Observation (z_t)
-            R_output = self.transformer_R(z_t.unsqueeze(1))
-            pred_R = self.fc_R(R_output.squeeze(1))
-            r_diag = F.softplus(pred_R) + 0.01
-            
-            # --- Covariance Prediction (Diagonal only) ---
-            p_diag = torch.diagonal(P, dim1=1, dim2=2)
-            p_diag = torch.clamp(p_diag, min=1e-6, max=1e6)
-            p_pred_diag = f_diag * p_diag * f_diag + q_diag
-            p_pred_diag = torch.clamp(p_pred_diag, min=1e-6, max=1e6)
-            
-            # --- Measurement Update ---
+            pred_x = pred_x_all[:, time_step, :]
+            Q_t = Q_all[:, time_step]
+            F_t = F_all[:, time_step]
+            R_t = R_all[:, time_step]
+
+            P_pred = torch.baddbmm(Q_t, F_t, torch.bmm(P, F_t.transpose(-1, -2)))
+            P_pred = half * (P_pred + P_pred.transpose(-1, -2))
+            P_pred = P_pred + eps * eye_batch
+
             mask_t = repeat_data[:, time_step]
+            z_t = _z[:, time_step, :]
+            innovation = z_t - pred_x
             
-            # Innovation y = z - Hx (H=I here)
-            y = z_t - pred_x
+            S = P_pred + R_t
+            S = half * (S + S.transpose(-1, -2))
+            S = S + eps * eye_batch
             
-            # Innovation Covariance S = P_pred + R (diagonal)
-            s_diag = p_pred_diag + r_diag
+            S_chol = torch.linalg.cholesky_ex(S, upper=False).L
+            S_inv = torch.cholesky_inverse(S_chol)
             
-            # Kalman Gain K = P_pred / S (element-wise for diagonal)
-            k_diag = p_pred_diag / (s_diag + 1e-6)
-            k_diag = torch.clamp(k_diag, min=0.0, max=1.0)
+            K = torch.bmm(P_pred, S_inv)
+            K = torch.clamp(K, min=clamp_min.item(), max=clamp_max.item())
+
+            x_k_update = pred_x + torch.bmm(K, innovation.unsqueeze(-1)).squeeze(-1)
             
-            # State Update (element-wise)
-            x_k_update = pred_x + k_diag * y
-            
-            # Check for NaN in update
-            if torch.isnan(x_k_update).any():
-                x_k_update = pred_x
-            
-            # Covariance Update (diagonal): P_new = (1 - K) * P_pred
-            p_k_update_diag = (1.0 - k_diag) * p_pred_diag
-            p_k_update_diag = torch.clamp(p_k_update_diag, min=1e-6, max=1e6)
-            
-            # Reconstruct full matrices for output
-            K = torch.diag_embed(k_diag)
-            P_pred = torch.diag_embed(p_pred_diag)
-            P_k_update = torch.diag_embed(p_k_update_diag)
-            
-            # Apply Mask
-            mask_b1 = mask_t.unsqueeze(1).to(x_k_update.dtype)
-            mask_b11 = mask_t.unsqueeze(1).unsqueeze(1).to(P_k_update.dtype)
-            
-            x = x_k_update * mask_b1 + pred_x * (1.0 - mask_b1)
-            P = P_k_update * mask_b11 + P_pred * (1.0 - mask_b11)
-            
-            # Store results
-            xres_lst.append(x)
-        
-        # Stack results
-        xres = torch.stack(xres_lst, dim=1) # (Batch, Seq, NOUT)
-        
-        # --- Loss Calculation ---
-        # Flatten
-        xres_flat = torch.reshape(xres, [-1, self.NOUT])
+            x_k_update = torch.where(
+                torch.isnan(x_k_update) | torch.isinf(x_k_update),
+                pred_x,
+                x_k_update
+            )
+
+            P_k_update = torch.bmm(eye_batch - K, P_pred)
+            P_k_update = half * (P_k_update + P_k_update.transpose(-1, -2))
+            P_k_update = P_k_update + eps * eye_batch
+
+            mask_b1 = mask_t.unsqueeze(1).to(input_dtype)
+            mask_b11 = mask_t.unsqueeze(1).unsqueeze(1).to(input_dtype)
+
+            x = x_k_update * mask_b1 + pred_x * (one - mask_b1)
+            P = (P_k_update * mask_b11 + P_pred * (one - mask_b11))
+
+            xres_tensor[:, time_step, :] = x
+
+        xres_flat = torch.reshape(xres_tensor, [-1, self.NOUT])
         target_flat = torch.reshape(target_data, [-1, self.NOUT])
         mask_flat = torch.reshape(repeat_data, [-1])
-        
-        # Filter valid observations
+
         valid_indices = torch.where(mask_flat != 0)[0]
-        
+
         if valid_indices.shape[0] > 0:
             final_output = torch.index_select(xres_flat, 0, valid_indices)
             y = torch.index_select(target_flat, 0, valid_indices)
             
             diff = final_output - y
-            loss = 0.5 * torch.mean(diff ** 2)
+            diff_reshaped = diff.view(-1, self.n_joints, 3)
+            
+            eps = torch.tensor(1e-6, device=device, dtype=input_dtype)
+            joint_errors = torch.sqrt(torch.sum(diff_reshaped ** 2, dim=-1) + eps)
+            mpjpe = joint_errors.mean().to(input_dtype)
+            
+            smooth_loss = torch.mean(torch.sqrt(diff ** 2 + eps)).to(input_dtype)
+            
+            loss = mpjpe + torch.tensor(0.1, device=device, dtype=input_dtype) * smooth_loss
         else:
-            final_output = torch.empty(0, self.NOUT, device=device)
-            y = torch.empty(0, self.NOUT, device=device)
-            loss = torch.tensor(0.0, device=device, requires_grad=True)
-        
-        # Store outputs for easy access
-        self.final_output = final_output
-        self.y = y
-        
-        # L2 Regularization
-        l2_reg = sum(torch.sum(param ** 2) for param in self.parameters()) * 1e-4
-        loss = loss + l2_reg
-        
-        # Package states
+            final_output = torch.empty(0, self.NOUT, device=device, dtype=input_dtype)
+            y = torch.empty(0, self.NOUT, device=device, dtype=input_dtype)
+            loss = xres_tensor.sum() * torch.tensor(0.0, device=device, dtype=input_dtype)
+
         new_states = {
             "PCov_t": P,
             "_x_t": x
         }
-        
-        return loss, new_states
+
+        return loss, new_states, final_output, y

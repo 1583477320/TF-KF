@@ -435,7 +435,7 @@ def predict_with_model(model, params, X, Y, index_list, S_list, R_L_list, F_list
         else:
             _P_inp = dic_state["PCov_pre"]
         
-        loss, new_states = model(
+        result = model(
             _z=x,
             target_data=y,
             repeat_data=repeat_data,
@@ -445,6 +445,12 @@ def predict_with_model(model, params, X, Y, index_list, S_list, R_L_list, F_list
             state_dict=dic_state,
             is_training=False
         )
+        
+        if len(result) == 4:
+            loss, new_states, final_output, y_target = result
+        else:
+            loss, new_states = result
+            final_output, y_target = None, None
         
         if "F_t" in new_states:
             dic_state["F_pre"] = [(h.detach(), c.detach()) for h, c in new_states["F_t"]]
@@ -457,8 +463,12 @@ def predict_with_model(model, params, X, Y, index_list, S_list, R_L_list, F_list
         if "_x_t" in new_states:
             dic_state["_x_pre"] = new_states["_x_t"].detach()
         
-        pred = model.final_output
-        gt = model.y
+        if final_output is not None:
+            pred = final_output
+            gt = y_target
+        else:
+            pred = model.final_output
+            gt = model.y
         
         all_preds.append(pred.cpu().numpy())
         all_gts.append(gt.cpu().numpy())
@@ -690,7 +700,7 @@ def main():
                     dic_state["_x_pre"] = torch.zeros(1, params['n_output']).to(device)
                     dic_state["PCov_pre"] = I.clone()
                     
-                    loss, new_states = model(
+                    result = model(
                         _z=X_input,
                         target_data=torch.from_numpy(Y_seq).unsqueeze(0).float().to(device),
                         repeat_data=torch.ones(1, X_seq.shape[0]).to(device),
@@ -701,7 +711,13 @@ def main():
                         is_training=False
                     )
                     
-                    pred = model.final_output[target_frame_idx].cpu().numpy().reshape(17, 3)
+                    if len(result) == 4:
+                        loss, new_states, final_output, y_target = result
+                        pred = final_output[target_frame_idx].cpu().numpy().reshape(17, 3)
+                    else:
+                        loss, new_states = result
+                        pred = model.final_output[target_frame_idx].cpu().numpy().reshape(17, 3)
+                    
                     predictions[model_type] = pred
                     mpjpe = compute_mpjpe(pred.reshape(1, 17, 3), gt_3d.reshape(1, 17, 3))
                     print(f"MPJPE: {mpjpe:.2f} mm")
