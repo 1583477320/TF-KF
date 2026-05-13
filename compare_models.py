@@ -12,6 +12,7 @@ from helper import utils as ut
 from helper import train_helper as th
 from helper.data_lodaer import build_inception_test_transform
 from model_runner.klstm.kfl_QRFf_transformer import Model as kfl_QRFf_transformer
+from model_runner.klstm.pure_kalman import PureKalmanFilter
 from model_runner.klstm.kfl_QRFf import Model as kfl_QRFf
 from model_runner.klstm.kfl_QRf import Model as kfl_QRf
 from model_runner.klstm.kfl_K import Model as kfl_K
@@ -27,6 +28,7 @@ SKELETON_EDGES = [
 MODEL_COLORS = {
     "kfl_QRFf_transformer": "#FF6B6B",
     "kfl_QRFf": "#4ECDC4",
+    "Kalman": "#96CEB4",
     "kfl_QRf": "#45B7D1",
     "kfl_K": "#96CEB4",
     "lstm": "#FFEAA7",
@@ -38,6 +40,16 @@ MODEL_COLORS = {
 def find_model_files(base_checkpoint_dir):
     """
     查找所有模型文件并按类型分组
+    
+    支持两种目录结构：
+    1. 新版本：分模型保存的目录结构 (model/kfl_QRFf/..., model/lstm/...)
+    2. 旧版本：单目录结构 (model/*.ckpt)
+    
+    Args:
+        base_checkpoint_dir: 检查点基础目录
+    
+    Returns:
+        model_files: 字典 {model_type: [file_paths]}
     """
     model_files = {}
     
@@ -45,14 +57,14 @@ def find_model_files(base_checkpoint_dir):
         return model_files
     
     has_subdirs = False
-    for model_type in ["kfl_QRFf_transformer", "kfl_QRFf", "kfl_QRf", "kfl_K", "lstm"]:
+    for model_type in ["kfl_QRFf_transformer", "pure_kalman", "kfl_QRFf", "kfl_QRf", "kfl_K", "lstm"]:
         model_dir = os.path.join(base_checkpoint_dir, model_type)
         if os.path.exists(model_dir) and os.path.isdir(model_dir):
             has_subdirs = True
             break
     
     if has_subdirs:
-        for model_type in ["kfl_QRFf_transformer", "kfl_QRFf", "kfl_QRf", "kfl_K", "lstm"]:
+        for model_type in ["kfl_QRFf_transformer", "pure_kalman", "kfl_QRFf", "kfl_QRf", "kfl_K", "lstm"]:
             model_dir = os.path.join(base_checkpoint_dir, model_type)
             
             if not os.path.exists(model_dir):
@@ -74,7 +86,11 @@ def find_model_files(base_checkpoint_dir):
                        sorted(regular_files, key=lambda x: os.path.getmtime(x), reverse=True)
             
             if all_files:
-                model_files[model_type] = all_files
+                # 将目录名称映射到模型类型
+                if model_type == "pure_kalman":
+                    model_files["Kalman"] = all_files
+                else:
+                    model_files[model_type] = all_files
     else:
         exclude_files = ["optimizer_final.pth", "inceptionresnetv2-520b38e4.pth", "model_final.pth"]
         for f in os.listdir(base_checkpoint_dir):
@@ -105,6 +121,14 @@ def find_model_files(base_checkpoint_dir):
 def detect_model_type(model_path):
     """
     检测模型类型
+    
+    通过检查 state_dict 的键名来识别模型类型
+    
+    Args:
+        model_path: 模型文件路径
+    
+    Returns:
+        model_type: 模型类型字符串
     """
     try:
         checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
@@ -131,6 +155,8 @@ def detect_model_type(model_path):
     
     if 'transformer' in model_path.lower():
         return "kfl_QRFf_transformer"
+    elif 'pure_kalman_filter' in model_path.lower():
+        return "Kalman"
     elif 'kfl_k' in model_path.lower():
         return "kfl_K"
     elif 'kfl_qrff' in model_path.lower():
@@ -146,6 +172,15 @@ def detect_model_type(model_path):
 def load_model(model_path, model_type, params, device):
     """
     加载模型
+    
+    Args:
+        model_path: 模型文件路径
+        model_type: 模型类型
+        params: 参数字典
+        device: 设备
+    
+    Returns:
+        model: 加载好的模型
     """
     if model_type == "kfl_QRFf_transformer":
         model = kfl_QRFf_transformer(params=params)
@@ -177,9 +212,47 @@ def load_model(model_path, model_type, params, device):
     return model
 
 
+def load_pure_kalman_model(model_path, device):
+    """
+    加载纯卡尔曼滤波器模型
+    
+    Args:
+        model_path: 模型文件路径
+        device: 设备
+    
+    Returns:
+        model: 加载好的纯卡尔曼滤波器
+    """
+    # 设置weights_only=False以加载包含NumPy数组的模型
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    
+    # 提取参数
+    F = torch.from_numpy(checkpoint['F']).to(device)
+    Q = torch.from_numpy(checkpoint['Q']).to(device)
+    R = torch.from_numpy(checkpoint['R']).to(device)
+    dim = checkpoint['dim']
+    
+    # 处理H矩阵
+    H = None
+    if checkpoint.get('H') is not None:
+        H = torch.from_numpy(checkpoint['H']).to(device)
+    
+    # 创建模型
+    model = PureKalmanFilter(F, Q, R, dim, H)
+    
+    return model
+
+
 def compute_mpjpe(pred, gt):
     """
-    计算 MPJPE (mm)
+    计算 MPJPE (Mean Per Joint Position Error)
+    
+    Args:
+        pred: 预测值 (N, 51) 或 (N, 17, 3)
+        gt: 真实值 (N, 51) 或 (N, 17, 3)
+    
+    Returns:
+        mpjpe: 平均每个关节的位置误差 (mm)
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
@@ -196,7 +269,15 @@ def compute_mpjpe(pred, gt):
 
 
 def transform_coords(p):
-    """坐标转换用于可视化"""
+    """
+    坐标转换用于可视化
+    
+    Args:
+        p: 3D 坐标 (N, 3)
+    
+    Returns:
+        (x, y, z): 转换后的坐标
+    """
     return p[:, 0], p[:, 2], -p[:, 1]
 
 
@@ -213,9 +294,9 @@ def visualize_single_model_comparison(img_path, gt_3d, pred_3d, model_name, mpjp
         save_path: 保存路径
         add_legend: 是否添加图例
     """
-    fig = plt.figure(figsize=(12, 5))
+    fig = plt.figure(figsize=(8, 5))
     
-    ax_img = fig.add_subplot(1, 3, 1)
+    ax_img = fig.add_subplot(1, 2, 1)
     try:
         raw_img = Image.open(img_path)
         ax_img.imshow(raw_img)
@@ -225,28 +306,28 @@ def visualize_single_model_comparison(img_path, gt_3d, pred_3d, model_name, mpjp
         ax_img.set_title("Input Image")
     ax_img.axis('off')
     
-    ax_3d = fig.add_subplot(1, 3, 2, projection='3d')
-    ax_3d.set_title(f"3D Pose Comparison\n{model_name} | MPJPE: {mpjpe:.2f} mm")
+    # ax_3d = fig.add_subplot(1, 3, 2, projection='3d')
+    # ax_3d.set_title(f"3D Pose Comparison\n{model_name} | MPJPE: {mpjpe:.2f} mm")
     
-    gt_x, gt_y, gt_z = transform_coords(gt_3d)
-    pred_x, pred_y, pred_z = transform_coords(pred_3d)
+    # gt_x, gt_y, gt_z = transform_coords(gt_3d)
+    # pred_x, pred_y, pred_z = transform_coords(pred_3d)
     color = MODEL_COLORS.get(model_name, "#888888")
     
-    for s, e in SKELETON_EDGES:
-        ax_3d.plot([gt_x[s], gt_x[e]], [gt_y[s], gt_y[e]], [gt_z[s], gt_z[e]], 
-                   color=MODEL_COLORS["GT"], linestyle='-', linewidth=2.5)
-        ax_3d.plot([pred_x[s], pred_x[e]], [pred_y[s], pred_y[e]], [pred_z[s], pred_z[e]], 
-                   color=color, linestyle='--', linewidth=2)
+    # for s, e in SKELETON_EDGES:
+    #     ax_3d.plot([gt_x[s], gt_x[e]], [gt_y[s], gt_y[e]], [gt_z[s], gt_z[e]], 
+    #                color=MODEL_COLORS["GT"], linestyle='-', linewidth=2.5)
+    #     ax_3d.plot([pred_x[s], pred_x[e]], [pred_y[s], pred_y[e]], [pred_z[s], pred_z[e]], 
+    #                color=color, linestyle='--', linewidth=2)
     
-    ax_3d.scatter(gt_x, gt_y, gt_z, color=MODEL_COLORS["GT"], s=50, marker='o', label='Ground Truth')
-    ax_3d.scatter(pred_x, pred_y, pred_z, color=color, s=40, marker='^', label=model_name)
+    # ax_3d.scatter(gt_x, gt_y, gt_z, color=MODEL_COLORS["GT"], s=50, marker='o', label='Ground Truth')
+    # ax_3d.scatter(pred_x, pred_y, pred_z, color=color, s=40, marker='^', label=model_name)
     
-    if add_legend:
-        ax_3d.legend(loc='upper left', fontsize=8)
+    # if add_legend:
+    #     ax_3d.legend(loc='upper left', fontsize=8)
     
-    ax_3d.view_init(elev=15, azim=-70)
+    # ax_3d.view_init(elev=15, azim=-70)
     
-    ax_2d = fig.add_subplot(1, 3, 3)
+    ax_2d = fig.add_subplot(1, 2, 2)
     ax_2d.set_title("2D View (X-Y)")
     ax_2d.set_xlabel("X")
     ax_2d.set_ylabel("Y")
@@ -305,6 +386,11 @@ def visualize_multi_model_comparison(img_path, gt_3d, predictions, output_dir=No
 def visualize_error_comparison(gt_3d, predictions, save_path=None):
     """
     每个关节的误差对比图
+    
+    Args:
+        gt_3d: 真实 3D 坐标 (17, 3)
+        predictions: 字典 {model_name: pred_3d}
+        save_path: 保存路径
     """
     joint_names = [
         "Hip", "RHip", "RKnee", "RFoot",
@@ -349,6 +435,23 @@ def visualize_error_comparison(gt_3d, predictions, save_path=None):
 def predict_with_model(model, params, X, Y, index_list, S_list, R_L_list, F_list, batch_size, device):
     """
     使用模型进行预测
+    
+    Args:
+        model: 模型
+        params: 参数字典
+        X: 输入序列
+        Y: 目标序列
+        index_list: 索引列表
+        S_list: 序列ID列表
+        R_L_list: 重复掩码列表
+        F_list: 帧路径列表
+        batch_size: 批次大小
+        device: 设备
+    
+    Returns:
+        all_preds: 所有预测结果
+        all_gts: 所有真实值
+        all_indices: 所有索引
     """
     model.eval()
     
@@ -479,7 +582,6 @@ def predict_with_model(model, params, X, Y, index_list, S_list, R_L_list, F_list
     
     return all_preds, all_gts, all_indices
 
-
 @torch.no_grad()
 def predict_with_inception(model, img_paths, Y, device, batch_size=128):
     """
@@ -537,6 +639,11 @@ def predict_with_inception(model, img_paths, Y, device, batch_size=128):
 
 
 def main():
+    """
+    主函数
+    
+    加载多个模型，对指定样本进行预测对比，并生成可视化结果
+    """
     parser = argparse.ArgumentParser(description="多模型预测对比工具")
     parser.add_argument("--img", type=str, default=None, help="指定要对比的图片路径")
     parser.add_argument("--sample_idx", type=int, default=100, help="指定样本索引（默认：100）")
@@ -650,7 +757,6 @@ def main():
                 
                 transform = build_inception_test_transform()
                 
-                # Inception 使用输入帧图片预测，但结果和下一帧 GT 对比
                 try:
                     img = Image.open(input_img_path).convert("RGB")
                     img = transform(img).unsqueeze(0).to(device)
@@ -666,6 +772,53 @@ def main():
                     print(f"MPJPE: {mpjpe:.2f} mm")
                 except Exception as e:
                     print(f"Error processing image: {e}")
+                
+                del model
+                torch.cuda.empty_cache()
+            elif model_type == "Kalman":
+                # 加载纯卡尔曼滤波器
+                model = load_pure_kalman_model(model_path, device)
+                
+                cumsum = 0
+                target_seq_idx = 0
+                target_frame_idx = 0
+                original_sample_idx = sample_idx
+                
+                for seq_idx, frames in enumerate(F_list_test):
+                    seq_len = len(frames) - 1 if predict_next_frame else len(frames)
+                    if original_sample_idx < cumsum + seq_len:
+                        target_seq_idx = seq_idx
+                        target_frame_idx = original_sample_idx - cumsum
+                        break
+                    cumsum += seq_len
+                
+                print(f"  Sequence: {target_seq_idx}, Frame: {target_frame_idx}")
+                
+                # 使用X_test作为输入（CNN特征）
+                X_seq = X_test[target_seq_idx]
+                
+                X_input = torch.from_numpy(X_seq).unsqueeze(0).float().to(device)
+                
+                with torch.no_grad():
+                    # 初始化状态
+                    batch_size = 1
+                    seq_length = X_seq.shape[0]
+                    NOUT = params['n_output']
+                    
+                    # 初始化输入状态
+                    x_init = torch.zeros(batch_size, NOUT).to(device)
+                    P_init = torch.eye(NOUT).unsqueeze(0).to(device)
+                    
+                    # 执行纯卡尔曼滤波
+                    repeat_data = torch.ones(batch_size, seq_length).to(device)
+                    x_filtered, P_filtered = model.forward(X_input, repeat_data, x_init, P_init)
+                    
+                    # 获取指定帧的预测结果
+                    pred = x_filtered[0, target_frame_idx].cpu().numpy().reshape(17, 3)
+                    
+                    predictions[model_type] = pred
+                    mpjpe = compute_mpjpe(pred.reshape(1, 17, 3), gt_3d.reshape(1, 17, 3))
+                    print(f"MPJPE: {mpjpe:.2f} mm")
                 
                 del model
                 torch.cuda.empty_cache()
@@ -750,12 +903,15 @@ def main():
             output_dir=args.output_dir
         )
         
+        # 过滤掉Inception，只保留其他三个模型
+        predictions_filtered = {k: v for k, v in predictions.items() if k != "Inception"}
+
         visualize_error_comparison(
             gt_3d=gt_3d,
-            predictions=predictions,
+            predictions=predictions_filtered,
             save_path=os.path.join(args.output_dir, "joint_error_comparison.png")
         )
-    
+
     return predictions, gt_3d
 
 

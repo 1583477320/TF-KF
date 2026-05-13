@@ -412,6 +412,8 @@ def prepare_sequences_next_frame(params, db_values_x, db_values_y, db_names):
     R_L_arr = np.asarray(R_L, dtype=np.int32)
     R_input = R_L_arr[:, :-1]
     
+    print(f"R_L_arr shape: {R_L_arr.shape}, R_L_arr[0]: {R_L_arr[0] if len(R_L_arr) > 0 else 'N/A'}")
+    
     return (X_input, Y_target, F_input, np.asarray(G_L, dtype=np.float32), 
             np.asarray(S_L, dtype=np.float32), R_input)
 

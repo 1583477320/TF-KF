@@ -234,6 +234,9 @@ def train(model, params, device):
             )
 
             loss.backward()
+            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=params.get("grad_clip", 1.0))
+            
             optimizer.step()
             optimizer.zero_grad()
 

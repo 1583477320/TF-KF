@@ -1,0 +1,602 @@
+[
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.1,
+    "velocity_decay": 0.9,
+    "mpjpe": 512.85
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.1,
+    "velocity_decay": 0.95,
+    "mpjpe": 512.85
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.1,
+    "velocity_decay": 0.99,
+    "mpjpe": 512.85
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.1,
+    "velocity_decay": 1.0,
+    "mpjpe": 512.85
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.5,
+    "velocity_decay": 0.9,
+    "mpjpe": 1863.36
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.5,
+    "velocity_decay": 0.95,
+    "mpjpe": 1863.36
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.5,
+    "velocity_decay": 0.99,
+    "mpjpe": 1863.36
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 0.5,
+    "velocity_decay": 1.0,
+    "mpjpe": 1863.36
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 1.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 2796.18
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 1.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 2796.18
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 1.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 2796.18
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 1.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 2796.18
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 2.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 3729.75
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 2.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 3729.75
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 2.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 3729.75
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 2.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 3729.75
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 5.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 4663.81
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 5.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 4663.81
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 5.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 4663.81
+  },
+  {
+    "Q_scale": 0.001,
+    "R_scale": 5.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 4663.81
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.1,
+    "velocity_decay": 0.9,
+    "mpjpe": 508.8
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.1,
+    "velocity_decay": 0.95,
+    "mpjpe": 508.8
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.1,
+    "velocity_decay": 0.99,
+    "mpjpe": 508.8
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.1,
+    "velocity_decay": 1.0,
+    "mpjpe": 508.8
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.5,
+    "velocity_decay": 0.9,
+    "mpjpe": 1852.25
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.5,
+    "velocity_decay": 0.95,
+    "mpjpe": 1852.25
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.5,
+    "velocity_decay": 0.99,
+    "mpjpe": 1852.25
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 0.5,
+    "velocity_decay": 1.0,
+    "mpjpe": 1852.25
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 1.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 2783.65
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 1.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 2783.65
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 1.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 2783.65
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 1.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 2783.65
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 2.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 3718.59
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 2.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 3718.59
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 2.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 3718.59
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 2.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 3718.59
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 5.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 4656.83
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 5.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 4656.83
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 5.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 4656.83
+  },
+  {
+    "Q_scale": 0.01,
+    "R_scale": 5.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 4656.83
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.1,
+    "velocity_decay": 0.9,
+    "mpjpe": 471.71
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.1,
+    "velocity_decay": 0.95,
+    "mpjpe": 471.71
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.1,
+    "velocity_decay": 0.99,
+    "mpjpe": 471.71
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.1,
+    "velocity_decay": 1.0,
+    "mpjpe": 471.71
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.5,
+    "velocity_decay": 0.9,
+    "mpjpe": 1748.05
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.5,
+    "velocity_decay": 0.95,
+    "mpjpe": 1748.05
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.5,
+    "velocity_decay": 0.99,
+    "mpjpe": 1748.05
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 0.5,
+    "velocity_decay": 1.0,
+    "mpjpe": 1748.05
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 1.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 2664.25
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 1.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 2664.25
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 1.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 2664.25
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 1.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 2664.25
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 2.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 3610.54
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 2.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 3610.54
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 2.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 3610.54
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 2.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 3610.54
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 5.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 4588.06
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 5.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 4588.06
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 5.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 4588.06
+  },
+  {
+    "Q_scale": 0.1,
+    "R_scale": 5.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 4588.06
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.1,
+    "velocity_decay": 0.9,
+    "mpjpe": 358.33
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.1,
+    "velocity_decay": 0.95,
+    "mpjpe": 358.33
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.1,
+    "velocity_decay": 0.99,
+    "mpjpe": 358.33
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.1,
+    "velocity_decay": 1.0,
+    "mpjpe": 358.33
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.5,
+    "velocity_decay": 0.9,
+    "mpjpe": 1398.56
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.5,
+    "velocity_decay": 0.95,
+    "mpjpe": 1398.56
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.5,
+    "velocity_decay": 0.99,
+    "mpjpe": 1398.56
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 0.5,
+    "velocity_decay": 1.0,
+    "mpjpe": 1398.56
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 1.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 2237.7
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 1.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 2237.7
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 1.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 2237.7
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 1.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 2237.7
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 2.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 3197.58
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 2.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 3197.58
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 2.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 3197.58
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 2.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 3197.58
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 5.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 4305.5
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 5.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 4305.5
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 5.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 4305.5
+  },
+  {
+    "Q_scale": 0.5,
+    "R_scale": 5.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 4305.5
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.1,
+    "velocity_decay": 0.9,
+    "mpjpe": 278.89
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.1,
+    "velocity_decay": 0.95,
+    "mpjpe": 278.89
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.1,
+    "velocity_decay": 0.99,
+    "mpjpe": 278.89
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.1,
+    "velocity_decay": 1.0,
+    "mpjpe": 278.89
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.5,
+    "velocity_decay": 0.9,
+    "mpjpe": 1119.29
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.5,
+    "velocity_decay": 0.95,
+    "mpjpe": 1119.29
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.5,
+    "velocity_decay": 0.99,
+    "mpjpe": 1119.29
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 0.5,
+    "velocity_decay": 1.0,
+    "mpjpe": 1119.29
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 1.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 1864.6
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 1.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 1864.6
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 1.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 1864.6
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 1.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 1864.6
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 2.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 2797.57
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 2.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 2797.57
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 2.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 2797.57
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 2.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 2797.57
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 5.0,
+    "velocity_decay": 0.9,
+    "mpjpe": 3997.72
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 5.0,
+    "velocity_decay": 0.95,
+    "mpjpe": 3997.72
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 5.0,
+    "velocity_decay": 0.99,
+    "mpjpe": 3997.72
+  },
+  {
+    "Q_scale": 1.0,
+    "R_scale": 5.0,
+    "velocity_decay": 1.0,
+    "mpjpe": 3997.72
+  }
+]

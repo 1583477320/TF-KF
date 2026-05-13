@@ -1,0 +1,16 @@
+Pure Kalman Filter Model Configuration
+==================================================
+State Dimension: 51
+Best Test Loss: 0.238584
+
+Matrix Shapes:
+F shape: torch.Size([51, 51])
+Q shape: torch.Size([51, 51])
+R shape: torch.Size([51, 51])
+
+Parameters:
+n_output: 51
+seq_length: 50
+batch_size: 5
+normalise_data: 4
+reset_state: 5

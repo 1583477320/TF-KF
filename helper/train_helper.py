@@ -380,23 +380,43 @@ def prepare_kfl_QRFf_batch(
                 # 继承 LSTM 状态
                 if prev_F_t is not None:
                     for s in range(params['nlayer']):
-                        new_state_F[s][0][idx] = prev_F_t[s][0][idx]
-                        new_state_F[s][1][idx] = prev_F_t[s][1][idx]
+                        # 确保类型匹配，将NumPy数组转换为PyTorch张量
+                        if isinstance(prev_F_t[s][0][idx], np.ndarray):
+                            new_state_F[s][0][idx] = torch.from_numpy(prev_F_t[s][0][idx]).float().to(device)
+                            new_state_F[s][1][idx] = torch.from_numpy(prev_F_t[s][1][idx]).float().to(device)
+                        else:
+                            new_state_F[s][0][idx] = prev_F_t[s][0][idx]
+                            new_state_F[s][1][idx] = prev_F_t[s][1][idx]
 
                 if prev_Q_t is not None and "Q" in params["model"]:
                     for s in range(params['Qnlayer']):
-                        new_state_Q[s][0][idx] = prev_Q_t[s][0][idx]
-                        new_state_Q[s][1][idx] = prev_Q_t[s][1][idx]
+                        # 确保类型匹配，将NumPy数组转换为PyTorch张量
+                        if isinstance(prev_Q_t[s][0][idx], np.ndarray):
+                            new_state_Q[s][0][idx] = torch.from_numpy(prev_Q_t[s][0][idx]).float().to(device)
+                            new_state_Q[s][1][idx] = torch.from_numpy(prev_Q_t[s][1][idx]).float().to(device)
+                        else:
+                            new_state_Q[s][0][idx] = prev_Q_t[s][0][idx]
+                            new_state_Q[s][1][idx] = prev_Q_t[s][1][idx]
 
                 if prev_R_t is not None and "R" in params["model"]:
                     for s in range(params['Rnlayer']):
-                        new_state_R[s][0][idx] = prev_R_t[s][0][idx]
-                        new_state_R[s][1][idx] = prev_R_t[s][1][idx]
+                        # 确保类型匹配，将NumPy数组转换为PyTorch张量
+                        if isinstance(prev_R_t[s][0][idx], np.ndarray):
+                            new_state_R[s][0][idx] = torch.from_numpy(prev_R_t[s][0][idx]).float().to(device)
+                            new_state_R[s][1][idx] = torch.from_numpy(prev_R_t[s][1][idx]).float().to(device)
+                        else:
+                            new_state_R[s][0][idx] = prev_R_t[s][0][idx]
+                            new_state_R[s][1][idx] = prev_R_t[s][1][idx]
 
                 if prev_K_t is not None and "K" in params["model"]:
                     for s in range(params['Knlayer']):
-                        new_state_K[s][0][idx] = prev_K_t[s][0][idx]
-                        new_state_K[s][1][idx] = prev_K_t[s][1][idx]
+                        # 确保类型匹配，将NumPy数组转换为PyTorch张量
+                        if isinstance(prev_K_t[s][0][idx], np.ndarray):
+                            new_state_K[s][0][idx] = torch.from_numpy(prev_K_t[s][0][idx]).float().to(device)
+                            new_state_K[s][1][idx] = torch.from_numpy(prev_K_t[s][1][idx]).float().to(device)
+                        else:
+                            new_state_K[s][0][idx] = prev_K_t[s][0][idx]
+                            new_state_K[s][1][idx] = prev_K_t[s][1][idx]
 
                 state_reset_counter_lst[idx] = 0
 
