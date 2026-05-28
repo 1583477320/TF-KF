@@ -18,6 +18,10 @@ class PureKalmanFilter:
         self.dim = dim
         self.H = H
     
+    def eval(self):
+        """评估模式（无操作，纯卡尔曼滤波器没有可训练参数）"""
+        return self
+    
     def forward(self, z, mask, x_init, P_init):
         """
         执行卡尔曼滤波

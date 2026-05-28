@@ -44,8 +44,8 @@ def compute_mpjpe(pred, gt):
     计算 MPJPE (Mean Per Joint Position Error)
     
     Args:
-        pred: 预测值 (N, 51) 或 (N, 17, 3)，单位：米
-        gt: 真实值 (N, 51) 或 (N, 17, 3)，单位：米
+        pred: 预测值 (N, 51) 或 (N, 17, 3)
+        gt: 真实值 (N, 51) 或 (N, 17, 3)
     
     Returns:
         mpjpe: 平均每个关节的位置误差 (mm)
@@ -55,12 +55,21 @@ def compute_mpjpe(pred, gt):
     if isinstance(gt, torch.Tensor):
         gt = gt.detach().cpu().numpy()
     
+    # 检查是否为空数组
+    if pred.shape[0] == 0 or gt.shape[0] == 0:
+        return None
+    
     if pred.ndim == 2:
         pred = pred.reshape(-1, 17, 3)
     if gt.ndim == 2:
         gt = gt.reshape(-1, 17, 3)
     
     joint_errors = np.sqrt(np.sum((pred - gt) ** 2, axis=2))
+    
+    # 检查是否为空
+    if joint_errors.size == 0:
+        return None
+    
     mpjpe = np.mean(joint_errors)
     
     return mpjpe * 1000
@@ -215,6 +224,7 @@ def find_model_files(base_checkpoint_dir):
     
     if has_subdirs:
         for model_type in ["kfl_QRFf_transformer", "pure_kalman", "kfl_QRFf", "kfl_QRf", "kfl_K", "lstm"]:
+        # for model_type in ["kfl_QRFf"]:
             model_dir = os.path.join(base_checkpoint_dir, model_type)
             
             if not os.path.exists(model_dir):
@@ -696,7 +706,7 @@ def evaluate_model_by_action(model, params, X, Y, index_list, S_list, R_L_list, 
             _P_inp = dic_state["PCov_pre"]
         
         try:
-            loss, new_states, final_output, y = model(
+            result = model(
                 _z=x,
                 target_data=y,
                 repeat_data=repeat_data,
@@ -706,21 +716,18 @@ def evaluate_model_by_action(model, params, X, Y, index_list, S_list, R_L_list, 
                 state_dict=dic_state,
                 is_training=False
             )
-            pred = final_output
-            gt = y
-        except ValueError:
-            loss, new_states = model(
-                _z=x,
-                target_data=y,
-                repeat_data=repeat_data,
-                _x_inp=_x_inp,
-                _P_inp=_P_inp,
-                _I=I[:actual_bsz],
-                state_dict=dic_state,
-                is_training=False
-            )
-            pred = torch.empty(0, model.NOUT, device=device)
-            gt = torch.empty(0, model.NOUT, device=device)
+            
+            if len(result) == 4:
+                loss, new_states, final_output, y_target = result
+                pred = final_output
+                gt = y_target
+            else:
+                loss, new_states = result
+                pred = model.final_output
+                gt = model.y
+        except Exception as e:
+            print(f"Model forward error: {e}")
+            continue
         
         if "F_t" in new_states:
             dic_state["F_pre"] = [(h.detach(), c.detach()) for h, c in new_states["F_t"]]
@@ -749,6 +756,14 @@ def evaluate_model_by_action(model, params, X, Y, index_list, S_list, R_L_list, 
         
         eval_pbar.set_postfix(loss=f"{loss.item():.4f}")
     
+    # 检查是否有任何预测结果
+    if len(all_preds) == 0 or len(all_gts) == 0:
+        return {
+            "action_mpjpe": {action: None for action in H36M_ACTIONS},
+            "overall_mpjpe": None,
+            "num_samples": 0
+        }
+    
     all_preds = np.concatenate(all_preds, axis=0)
     all_gts = np.concatenate(all_gts, axis=0)
     
@@ -761,7 +776,7 @@ def evaluate_model_by_action(model, params, X, Y, index_list, S_list, R_L_list, 
     action_mpjpe = {}
     for action in H36M_ACTIONS:
         indices = action_results[action]
-        if len(indices) > 0:
+        if len(indices) > 0 and len(all_preds) > 0:
             action_preds = all_preds[indices]
             action_gts = all_gts[indices]
             action_mpjpe[action] = compute_mpjpe(action_preds, action_gts)
@@ -901,7 +916,10 @@ def main():
             
             results_dict[model_type] = results
             
-            print(f"\nOverall MPJPE: {results['overall_mpjpe']:.2f} mm")
+            if results['overall_mpjpe'] is not None:
+                print(f"\nOverall MPJPE: {results['overall_mpjpe']:.2f} mm")
+            else:
+                print("\nOverall MPJPE: N/A")
             
             del model
             torch.cuda.empty_cache()
